@@ -6,6 +6,159 @@ from PyQt6.QtGui import QPixmap
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QScreen
 
+import json
+import random
+from google import genai
+
+# -------------------------------
+# Config/Initialisation
+# -------------------------------
+
+def get_client():
+    """Initialize Gemini client."""
+    return genai.Client(api_key="AIzaSyCdEiOJY_7be_TPXjvlPkYhFD7-vOoiRqo")
+
+# -------------------------------
+# Dialogue Handling
+# -------------------------------
+
+def load_dialogue(filename="dialogue.json"):
+    """Load JSON file with conversation"""
+    with open(filename, "r") as f:
+        data = json.load(f)
+    return data.get("dialogue", [])
+
+def get_other_speaker(dialogue, user_speaker):
+    """Retrieve other speaker, given who the user is"""
+    for line in dialogue:
+        speaker = line.get("speaker")
+        if speaker and speaker != user_speaker:
+            return speaker
+    # If no other speaker found, return a placeholder
+    return "OtherSpeaker"
+
+def append_to_dialogue(dialogue, speaker, text):
+    """Add a new line to dialogue list"""
+    dialogue.append({"speaker": speaker, "line": text})
+
+# -------------------------------
+# Prompt Building
+# -------------------------------
+
+def build_user_response_options_prompt(dialogue, user_speaker, last_line):
+    """Build prompt asking Gemini to generate 4 possible user responses in random order.
+    Responses: polite/neurotypical, rude, neurodivergent, walk away (randomized).
+    """
+    context = "\n".join(f"{d['speaker']}: {d['line']}" for d in dialogue)
+    prompt = f"""
+You are simulating a conversation between speakers.
+
+Conversation so far:
+{context}
+
+The other speaker just said:
+"{last_line}"
+
+Generate these 3 possible types of responses for {user_speaker}:
+1. Polite/neurotypical (least backlash)
+2. Obviously rude
+3. Neurodivergent-style (honest but may seem rude)
+
+Ensure these are human-like, natural responses.
+
+Then include a 4th option: "Walk away." (no response)
+
+Return strictly in this format without anything before/after
+[
+  {{"type": "polite", "text": "..."}},
+  {{"type": "rude", "text": "..."}},
+  {{"type": "neurodivergent", "text": "..."}},
+  {{"type": "walk_away", "text": "Walk away"}}
+]
+"""
+    return prompt
+
+def build_speaker_response_prompt(dialogue, speaker, last_line):
+    """Build prompt asking Gemini to generate a response from the other speaker,
+    based on the previous lines in the dialogue.
+    """
+    context = "\n".join(f"{d['speaker']}: {d['line']}" for d in dialogue)
+    prompt = f"""
+You are simulating a conversation.
+
+One speaker is "{speaker}".
+The last line from the other talking party is:
+"{last_line}"
+
+Based on the conversation so far and maintaining the personality consistently so far, generate a natural human-like response from "{speaker}". 
+
+Return only the text.
+"""
+    return prompt
+
+def build_analysis_prompt(dialogue, speaker, text):
+    """Build prompt asking Gemini to analyse the other speaker's response
+    """
+    context = "\n".join(f"{d['speaker']}: {d['line']}" for d in dialogue)
+    prompt = f"""
+You are an expert in conversational analysis.
+
+You are given a dialogue between two people so far:
+{context}
+
+The speaker of the last line spoken is {speaker} and they have just said {text}
+
+Analyse their last line.
+Focus on:
+- Tone and emotional nuance  
+- Implied meaning or subtext  
+- Possible intent or motivation  
+- How the line affects the conversation dynamic
+
+Return a concise but helpful explanation (3–5 sentences).
+"""
+    return prompt
+
+def build_feedback_prompt(dialogue, speaker, text):
+    """Build prompt asking Gemini to give feedback on user's decision - how it aligns with neurotypicals and implications that may be interpreted
+    """
+    context = "\n".join(f"{d['speaker']}: {d['line']}" for d in dialogue)
+    prompt = f"""
+You are an expert in social communication coaching, helping neurodiverse people understand how their words might be interpreted by neurotypical listeners.
+
+You are given a dialogue between two people so far:
+{context}
+
+Focus on the last line spoken by {speaker}, which is {text} and provide feedback as if you are advising a neurodiverse person who wants to understand how their words might be received by neurotypicals.
+
+Explain how the speaker’s last line might be perceived by neurotypical people. If any possible unintended negative interpretations (e.g., sounding rude, dismissive, defensive, blunt), point them out. Offer gentle, concrete advice or alternative phrasing that could convey the same intent more clearly or diplomatically.
+
+Return a concise but helpful explanation (3–5 sentences).
+
+"""
+    return prompt
+
+
+# -------------------------------
+# Gemini API Calls
+# -------------------------------
+
+def ask_gemini(client, prompt, model="gemini-2.5-flash"):
+    """Send a prompt and return the model's response"""
+    response = client.models.generate_content(model=model, contents=prompt)
+    return response.text.strip()
+
+# -------------------------------
+# Text Display / User Interaction
+# -------------------------------
+
+def conv_options_str_to_list(options_str):
+    # print("Current string input of options")
+    # print(options_str)
+    options_list = json.loads(options_str)
+    return options_list
+
+######################################################
 
 
 class BuddyWidget(QWidget):
@@ -94,7 +247,6 @@ class BuddyWidget(QWidget):
 
 
 
-
 class HomeScreen(QWidget):
     """Main menu: Simulate / Discuss / History"""
     def __init__(self, switch_to_simulate, switch_to_discuss, switch_to_history, switch_to_widget):
@@ -129,18 +281,26 @@ class HomeScreen(QWidget):
 from PyQt6.QtGui import QKeyEvent
 from PyQt6.QtCore import Qt
 
+from PyQt6.QtWidgets import QWidget, QVBoxLayout, QLabel, QPushButton, QHBoxLayout
+from PyQt6.QtGui import QPixmap, QFont
+from PyQt6.QtCore import Qt, QTimer
+
+from PyQt6.QtWidgets import QWidget, QVBoxLayout, QLabel, QPushButton, QTextEdit, QHBoxLayout
+from PyQt6.QtGui import QPixmap
+from PyQt6.QtCore import Qt
+
 class SimulateScreen(QWidget):
-    """Chat simulation screen"""
+    """Chat simulation screen (visual novel style with 'Next' button)"""
     def __init__(self, switch_to_home):
         super().__init__()
         layout = QVBoxLayout()
 
-        # Top bar with back button
+        # --- Top bar with Back button ---
         back_btn = QPushButton("Back")
         back_btn.clicked.connect(switch_to_home)
         layout.addWidget(back_btn, alignment=Qt.AlignmentFlag.AlignRight)
 
-        # Chat bubble (AI responses)
+        # --- Chat bubble (AI responses / dialogue text) ---
         self.chat_bubble = QLabel("Buddy: Hello! Ready to practice chatting?")
         self.chat_bubble.setWordWrap(True)
         self.chat_bubble.setStyleSheet(
@@ -148,23 +308,34 @@ class SimulateScreen(QWidget):
         )
         layout.addWidget(self.chat_bubble)
 
-        # ghost image + user input layout
+        # --- ghost image + dialogue box layout ---
         char_layout = QHBoxLayout()
-        self.user_input = QTextEdit()
-        self.user_input.setPlaceholderText("Type your response here...")
-        self.user_input.setFixedHeight(50)
 
-        self.submit_btn = QPushButton("Submit")
-        self.submit_btn.setFixedWidth(80)
-        self.submit_btn.clicked.connect(self.submit_text)
+        # Display box (read-only, backend-driven text)
+        self.display_box = QTextEdit()
+        self.display_box.setReadOnly(True)
+        self.display_box.setText("Buddy: Let's begin the conversation simulation.")
+        self.display_box.setFixedHeight(80)
+        self.display_box.setStyleSheet(
+            "background-color: #f5f5f5; border-radius: 8px; padding: 8px; font-size: 14px;"
+        )
 
-        # Put user input and submit button in a vertical layout
+        # "Next" button (replaces submit)
+        self.next_btn = QPushButton("Next")
+        self.next_btn.setFixedWidth(80)
+        self.next_btn.clicked.connect(self.do_something)
+
+        # Layout for text + button
         input_layout = QVBoxLayout()
-        input_layout.addWidget(self.user_input)
-        input_layout.addWidget(self.submit_btn)
+        input_layout.addWidget(self.display_box)
+        input_layout.addWidget(self.next_btn, alignment=Qt.AlignmentFlag.AlignRight)
 
+        # ghost image
         self.ghost = QLabel()
-        self.ghost.setPixmap(QPixmap("ghost.png").scaled(150, 150, Qt.AspectRatioMode.KeepAspectRatio))
+        self.ghost.setPixmap(QPixmap("ghost.png").scaled(
+            150, 150, Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.SmoothTransformation
+        ))
 
         char_layout.addLayout(input_layout)
         char_layout.addWidget(self.ghost)
@@ -172,25 +343,24 @@ class SimulateScreen(QWidget):
         layout.addLayout(char_layout)
         self.setLayout(layout)
 
-    # --- Override keyPressEvent to handle Enter ---
-    def keyPressEvent(self, event: QKeyEvent):
-        if event.key() == Qt.Key.Key_Return and not (event.modifiers() & Qt.KeyboardModifier.ShiftModifier):
-            # Enter pressed without Shift → submit
-            self.submit_text()
-            event.accept()
+        # Example dialogue sequence
+        self.dialogue_lines = [
+            "Buddy: Let's start with a quick warm-up.",
+            "Buddy: Imagine you're meeting someone new at an event.",
+            "Buddy: They smile and ask what you’re studying — how would you respond?",
+            "Buddy: That’s great! Let’s move on to another scenario."
+        ]
+        self.current_line = 0
+
+    # --- "Next" button functionality ---
+    def do_something(self):
+        """Advance through dialogue or trigger backend updates."""
+        self.current_line += 1
+        if self.current_line < len(self.dialogue_lines):
+            self.display_box.setText(self.dialogue_lines[self.current_line])
         else:
-            super().keyPressEvent(event)
-
-    # --- Submit callback ---
-    def submit_text(self):
-        user_msg = self.user_input.toPlainText().strip()
-        if not user_msg:
-            return
-        self.chat_bubble.setText(f"You: {user_msg}")
-        self.user_input.clear()
-
-        # Here you would later call your Gemini backend (Placeholder for Gemini API response):
-        # threading.Thread(target=self.get_gemini_response, args=(user_msg,), daemon=True).start()
+            self.display_box.setText("Buddy: That’s all for now! 🎉")
+            self.next_btn.setDisabled(True)
 
 
 
