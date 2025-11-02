@@ -1,0 +1,12 @@
+google-auth
+httpx
+pystray
+pillow
+python-dotenv
+tenacity
+google-auth
+httpx
+pystray
+pillow
+python-dotenv
+tenacity
